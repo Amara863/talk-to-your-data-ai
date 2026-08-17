@@ -1,79 +1,67 @@
+import os
 import streamlit as st
 import pandas as pd
 import duckdb
 import plotly.express as px
-import requests
-import json
+from groq import Groq
 import re
 
+# =========================================================
+# 🚀 Universal AI Text-to-SQL Engine (Groq LLaMA-3.3)
+# =========================================================
+GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", ""))
 
-# =========================================================
-# 🤖 True Universal Schema-to-SQL Engine (No Hardcoding)
-# =========================================================
-def generate_sql_universal(user_query, df):
-    # 1. Dynamically extract schema and sample from ANY uploaded CSV
-    schema_info = []
+
+def generate_sql(user_query, df):
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY missing! Please configure it in Streamlit Secrets.")
+
+    client = Groq(api_key=GROQ_API_KEY)
+
+    # Dynamically extract full schema and sample values from any CSV
+    schema_details = []
     for col in df.columns:
-        dtype = str(df[col].dtype)
-        sample_vals = df[col].dropna().unique()[:3].tolist()
-        schema_info.append(f"Column: '{col}' | Type: {dtype} | Sample values: {sample_vals}")
+        samples = df[col].dropna().unique()[:3].tolist()
+        schema_details.append(f"- Column: '{col}' (Type: {df[col].dtype}, Samples: {samples})")
 
-    schema_str = "\n".join(schema_info)
+    schema_text = "\n".join(schema_details)
 
-    # 2. System Prompt instructing LLM to strictly reason over DuckDB SQL
-    system_prompt = f"""You are an expert DuckDB SQL analyst.
-The table is already loaded in memory with the exact table name 'df'.
+    system_prompt = f"""You are an expert DuckDB SQL engineer.
+The dataset is loaded in memory under table name 'df'.
 
-Schema & Sample Data:
-{schema_str}
+Dataset Schema:
+{schema_text}
 
-User Question: "{user_query}"
+Task:
+Generate a strictly valid DuckDB SQL query to answer the user's question accurately.
 
 Rules:
-1. Return ONLY the executable DuckDB SQL query.
-2. Do NOT wrap the query in markdown (no ```sql or ```).
-3. Do NOT add any conversational text, notes, or explanations.
-4. Use case-insensitive matching where appropriate (e.g., LOWER(column) = 'value' or ILIKE).
-5. Ensure column names with spaces or special characters are enclosed in double quotes if necessary.
+1. Return ONLY the raw SQL query.
+2. NEVER use markdown code fences (no ```sql or ```).
+3. NEVER write explanations or additional text.
+4. Use ILIKE or LOWER() for flexible text matching where appropriate.
+5. If column names have spaces, enclose them in double quotes.
 """
 
-    # 3. Open Inference API (Mistral / Qwen / Llama engine)
-    url = "https://text.pollinations.ai/"
-    payload = {
-        "messages": [
-            {"role": "system",
-             "content": "You are a specialized SQL generation model that only outputs raw DuckDB SQL queries without markdown or explanation."},
-            {"role": "user", "content": system_prompt}
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"User question: {user_query}"}
         ],
-        "model": "mistral",
-        "temperature": 0.1
-    }
+        temperature=0.0
+    )
 
-    headers = {"Content-Type": "application/json"}
-
-    response = requests.post(url, json=payload, headers=headers, timeout=15)
-
-    if response.status_code != 200:
-        raise Exception(f"AI Service unavailable (Status {response.status_code}). Please try again.")
-
-    raw_text = response.text.strip()
-
-    # 4. Clean formatting / backticks
-    cleaned_sql = re.sub(r"^```(?:sql)?|```$", "", raw_text, flags=re.MULTILINE).strip()
-
-    # Extract only the SELECT statement
-    match = re.search(r"(SELECT\s+.*)", cleaned_sql, re.IGNORECASE | re.DOTALL)
-    if match:
-        cleaned_sql = match.group(1).rstrip(";").strip()
-
+    raw_sql = response.choices[0].message.content.strip()
+    cleaned_sql = re.sub(r"^```(?:sql)?|```$", "", raw_sql, flags=re.MULTILINE).strip()
     return cleaned_sql
 
 
 # =========================================================
-# 🎨 Streamlit Interface
+# 🎨 Streamlit Web UI
 # =========================================================
 st.set_page_config(
-    page_title="Universal Talk to Your Data | Text-to-SQL",
+    page_title="Universal Text-to-SQL Analytics",
     page_icon="📊",
     layout="wide"
 )
@@ -88,7 +76,7 @@ st.markdown("""
 
 st.title("📊 Universal Text-to-SQL Analytics Engine")
 st.write(
-    "Upload **any** CSV dataset (Library, Sales, Students, Healthcare, etc.), ask any analytical question, and get automatic SQL execution with dynamic visual charts.")
+    "Upload **any CSV file** (Sales, Student, Library, Hospital, Finance), ask questions in plain English, and get instant SQL execution with dynamic charts.")
 
 # Sidebar File Ingestion
 st.sidebar.header("📁 Data Ingestion")
@@ -104,13 +92,12 @@ if uploaded_file is not None:
     st.divider()
 
     user_query = st.text_input("💬 Ask a question about this data:",
-                               placeholder="e.g., Find top 5 most borrowed books by genre")
+                               placeholder="e.g., attendance for rahul / highest marks / total sales by region")
 
     if user_query:
-        with st.spinner("🤖 Analyzing schema and generating SQL query..."):
+        with st.spinner("🤖 Groq LLaMA-3 analyzing dataset and running SQL..."):
             try:
-                # Generate dynamic SQL
-                sql_query = generate_sql_universal(user_query, df)
+                sql_query = generate_sql(user_query, df)
 
                 col_left, col_right = st.columns([1, 1])
 
@@ -118,7 +105,6 @@ if uploaded_file is not None:
                     st.subheader("🔍 Generated SQL Query")
                     st.code(sql_query, language="sql")
 
-                    # Execute with DuckDB
                     result_df = duckdb.query(sql_query).df()
                     st.subheader("📋 Query Results")
                     st.dataframe(result_df, use_container_width=True)
@@ -148,7 +134,7 @@ if uploaded_file is not None:
                         )
                         st.plotly_chart(fig, use_container_width=True)
                     else:
-                        st.info("ℹ️ Scalar output; tabular view rendered on the left.")
+                        st.info("ℹ️ Scalar output; tabular view shown on the left.")
 
             except Exception as e:
                 st.error(f"❌ Execution Error: {e}")

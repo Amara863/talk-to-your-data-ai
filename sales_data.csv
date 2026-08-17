@@ -1,0 +1,10 @@
+Date,Region,Product,Category,Sales,Quantity
+2026-01-05,North,Laptop,Electronics,120000,2
+2026-01-10,South,Mobile,Electronics,45000,3
+2026-01-15,East,Chair,Furniture,12000,4
+2026-02-01,West,Desk,Furniture,25000,1
+2026-02-12,North,Mobile,Electronics,90000,6
+2026-02-20,South,Laptop,Electronics,180000,3
+2026-03-05,East,Table,Furniture,35000,2
+2026-03-15,West,Laptop,Electronics,240000,4
+2026-03-22,North,Chair,Furniture,18000,6

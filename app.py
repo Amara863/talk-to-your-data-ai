@@ -2,78 +2,78 @@ import streamlit as st
 import pandas as pd
 import duckdb
 import plotly.express as px
+import requests
+import json
 import re
 
 
 # =========================================================
-# 🧠 Deterministic & Accurate Text-to-SQL Engine
+# 🤖 True Universal Schema-to-SQL Engine (No Hardcoding)
 # =========================================================
-def generate_sql(prompt_text, df):
-    text = prompt_text.strip()
-    lowered = text.lower()
-    cols = list(df.columns)
+def generate_sql_universal(user_query, df):
+    # 1. Dynamically extract schema and sample from ANY uploaded CSV
+    schema_info = []
+    for col in df.columns:
+        dtype = str(df[col].dtype)
+        sample_vals = df[col].dropna().unique()[:3].tolist()
+        schema_info.append(f"Column: '{col}' | Type: {dtype} | Sample values: {sample_vals}")
 
-    cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c]) and c.lower() != 'date']
-    num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
+    schema_str = "\n".join(schema_info)
 
-    # 1. Detect Exact Column Value Filters (e.g., North, Electronics, Laptop)
-    matched_filters = []
-    filtered_cols = set()
-    for c in cat_cols:
-        for val in df[c].dropna().unique():
-            # Exact word or phrase match
-            if re.search(rf"\b{re.escape(str(val).lower())}\b", lowered):
-                matched_filters.append(f"LOWER({c}) = '{str(val).lower()}'")
-                filtered_cols.add(c)
+    # 2. System Prompt instructing LLM to strictly reason over DuckDB SQL
+    system_prompt = f"""You are an expert DuckDB SQL analyst.
+The table is already loaded in memory with the exact table name 'df'.
 
-    where_clause = f" WHERE {' AND '.join(matched_filters)}" if matched_filters else ""
+Schema & Sample Data:
+{schema_str}
 
-    # 2. Detect Target Metric (Sales vs Quantity vs Count)
-    is_qty = any(w in lowered for w in ["quantity", "qty", "number", "count", "items", "units", "total product"])
-    is_sales = any(w in lowered for w in ["sales", "revenue", "amount", "price", "earning"])
+User Question: "{user_query}"
 
-    target_num = None
-    if is_qty and "Quantity" in num_cols:
-        target_num = "Quantity"
-    elif is_sales and "Sales" in num_cols:
-        target_num = "Sales"
-    elif num_cols:
-        target_num = num_cols[0]
+Rules:
+1. Return ONLY the executable DuckDB SQL query.
+2. Do NOT wrap the query in markdown (no ```sql or ```).
+3. Do NOT add any conversational text, notes, or explanations.
+4. Use case-insensitive matching where appropriate (e.g., LOWER(column) = 'value' or ILIKE).
+5. Ensure column names with spaces or special characters are enclosed in double quotes if necessary.
+"""
 
-    # 3. Detect Group By Column
-    group_col = None
-    for c in cat_cols:
-        if c not in filtered_cols and (
-                c.lower() in lowered or f"by {c.lower()}" in lowered or f"per {c.lower()}" in lowered):
-            group_col = c
-            break
+    # 3. Open Inference API (Mistral / Qwen / Llama engine)
+    url = "https://text.pollinations.ai/"
+    payload = {
+        "messages": [
+            {"role": "system",
+             "content": "You are a specialized SQL generation model that only outputs raw DuckDB SQL queries without markdown or explanation."},
+            {"role": "user", "content": system_prompt}
+        ],
+        "model": "mistral",
+        "temperature": 0.1
+    }
 
-    # If "product" explicitly mentioned with grouping intent, group by Product
-    if "product" in lowered and "Product" not in filtered_cols:
-        group_col = "Product"
+    headers = {"Content-Type": "application/json"}
 
-    # 4. Formulate Accurate SQL Query
-    if group_col and target_num:
-        return f"SELECT {group_col}, SUM({target_num}) AS Total_{target_num} FROM df{where_clause} GROUP BY {group_col}"
+    response = requests.post(url, json=payload, headers=headers, timeout=15)
 
-    if target_num and where_clause and not group_col:
-        return f"SELECT SUM({target_num}) AS Total_{target_num} FROM df{where_clause}"
+    if response.status_code != 200:
+        raise Exception(f"AI Service unavailable (Status {response.status_code}). Please try again.")
 
-    if group_col:
-        return f"SELECT {group_col}, COUNT(*) AS Count FROM df{where_clause} GROUP BY {group_col}"
+    raw_text = response.text.strip()
 
-    if where_clause:
-        return f"SELECT * FROM df{where_clause}"
+    # 4. Clean formatting / backticks
+    cleaned_sql = re.sub(r"^```(?:sql)?|```$", "", raw_text, flags=re.MULTILINE).strip()
 
-    # Default Top Overview
-    primary_cat = cat_cols[0] if cat_cols else cols[0]
-    primary_num = num_cols[0] if num_cols else cols[-1]
-    return f"SELECT {primary_cat}, SUM({primary_num}) AS Total_{primary_num} FROM df GROUP BY {primary_cat}"
+    # Extract only the SELECT statement
+    match = re.search(r"(SELECT\s+.*)", cleaned_sql, re.IGNORECASE | re.DOTALL)
+    if match:
+        cleaned_sql = match.group(1).rstrip(";").strip()
+
+    return cleaned_sql
 
 
-# Page Setup & Styling
+# =========================================================
+# 🎨 Streamlit Interface
+# =========================================================
 st.set_page_config(
-    page_title="Talk to Your Data | Text-to-SQL Engine",
+    page_title="Universal Talk to Your Data | Text-to-SQL",
     page_icon="📊",
     layout="wide"
 )
@@ -86,16 +86,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Talk to Your Data — AI Analytics Engine")
-st.write("Upload any CSV file, ask questions in plain English, and get instant SQL execution with dynamic charts.")
+st.title("📊 Universal Text-to-SQL Analytics Engine")
+st.write(
+    "Upload **any** CSV dataset (Library, Sales, Students, Healthcare, etc.), ask any analytical question, and get automatic SQL execution with dynamic visual charts.")
 
-# Sidebar - File Ingestion
+# Sidebar File Ingestion
 st.sidebar.header("📁 Data Ingestion")
-uploaded_file = st.sidebar.file_uploader("Upload CSV Dataset", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Upload Any CSV Dataset", type=["csv"])
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    st.sidebar.success(f"Loaded {len(df)} rows successfully!")
+    st.sidebar.success(f"Loaded {len(df)} rows & {len(df.columns)} columns!")
 
     with st.expander("👀 View Raw Dataset Preview", expanded=False):
         st.dataframe(df.head(10), use_container_width=True)
@@ -103,12 +104,13 @@ if uploaded_file is not None:
     st.divider()
 
     user_query = st.text_input("💬 Ask a question about this data:",
-                               placeholder="e.g., total number of product in north region")
+                               placeholder="e.g., Find top 5 most borrowed books by genre")
 
     if user_query:
-        with st.spinner("⚡ Translating to SQL and executing..."):
+        with st.spinner("🤖 Analyzing schema and generating SQL query..."):
             try:
-                sql_query = generate_sql(user_query, df)
+                # Generate dynamic SQL
+                sql_query = generate_sql_universal(user_query, df)
 
                 col_left, col_right = st.columns([1, 1])
 
@@ -116,6 +118,7 @@ if uploaded_file is not None:
                     st.subheader("🔍 Generated SQL Query")
                     st.code(sql_query, language="sql")
 
+                    # Execute with DuckDB
                     result_df = duckdb.query(sql_query).df()
                     st.subheader("📋 Query Results")
                     st.dataframe(result_df, use_container_width=True)
@@ -135,10 +138,19 @@ if uploaded_file is not None:
                             color_discrete_sequence=['#2563EB']
                         )
                         st.plotly_chart(fig, use_container_width=True)
+                    elif len(numeric_cols) >= 2:
+                        fig = px.bar(
+                            result_df,
+                            x=numeric_cols[0],
+                            y=numeric_cols[1],
+                            template="plotly_white",
+                            color_discrete_sequence=['#2563EB']
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
                     else:
-                        st.info("ℹ️ Single metric scalar output; table view shown on the left.")
+                        st.info("ℹ️ Scalar output; tabular view rendered on the left.")
 
             except Exception as e:
                 st.error(f"❌ Execution Error: {e}")
 else:
-    st.info("👈 Upload `sales_data.csv` in the sidebar to get started!")
+    st.info("👈 Upload any CSV file in the sidebar to get started!")

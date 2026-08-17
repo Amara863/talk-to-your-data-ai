@@ -5,52 +5,50 @@ import plotly.express as px
 import requests
 import re
 
-
 # =========================================================
-# 🚀 100% Free AI Engine (Zero-Key Setup via Open Inference)
+# 🚀 Dynamic AI SQL Engine (Accurate Zero-Key Inference)
 # =========================================================
 def generate_sql_free(prompt_text, df):
-    # Rule-based fast smart analyzer + Open AI fallback
-    lowered = prompt_text.lower()
-    cols = list(df.columns)
+    columns_info = ", ".join([f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)])
+    sample_data = df.head(3).to_string(index=False)
 
-    # Smart local NLP to SQL parser
-    if "quantity" in lowered and "north" in lowered:
-        return "SELECT Product, SUM(Quantity) AS Total_Quantity FROM df WHERE Region = 'North' GROUP BY Product"
-    if "sales" in lowered and "region" in lowered:
-        return "SELECT Region, SUM(Sales) AS Total_Sales FROM df GROUP BY Region"
-    if "category" in lowered and ("sales" in lowered or "revenue" in lowered):
-        return "SELECT Category, SUM(Sales) AS Total_Sales FROM df GROUP BY Category"
-    if "top" in lowered or "highest" in lowered:
-        num_col = next((c for c in cols if pd.api.types.is_numeric_dtype(df[c])), cols[-1])
-        cat_col = next((c for c in cols if not pd.api.types.is_numeric_dtype(df[c])), cols[0])
-        return f"SELECT {cat_col}, SUM({num_col}) AS Total_{num_col} FROM df GROUP BY {cat_col} ORDER BY Total_{num_col} DESC LIMIT 5"
+    system_prompt = f"""You are an expert DuckDB SQL engineer.
+Table Name: strictly 'df'
+Columns & Data Types: {columns_info}
 
-    # Free Public Inference API
+Sample Rows:
+{sample_data}
+
+Instructions:
+1. Translate the user query into a strictly valid DuckDB SQL query.
+2. If the user asks for a specific filter (e.g., specific Category like 'Electronics', or Region like 'North'), use a WHERE clause (e.g. WHERE LOWER(Category) = 'electronics').
+3. If grouping is requested or implied with aggregations, include appropriate GROUP BY.
+4. Output ONLY the raw SQL query. Do not wrap in markdown (no ```sql or ```), do not add comments or explanations."""
+
     url = "https://text.pollinations.ai/"
-    system_prompt = f"""You are an expert SQL generator for DuckDB.
-Table name is strictly 'df'.
-Columns: {list(df.columns)}
-Question: {prompt_text}
-Return ONLY the raw SQL query. No markdown, no explanation, no backticks."""
+    payload = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Generate DuckDB SQL for: {prompt_text}"}
+        ],
+        "model": "mistral",
+        "seed": 42
+    }
 
     try:
-        res = requests.post(url, json={"messages": [{"role": "system", "content": system_prompt}], "model": "mistral"},
-                            timeout=10)
+        res = requests.post(url, json=payload, timeout=12)
         if res.status_code == 200:
-            cleaned = res.text.strip().replace("```sql", "").replace("```", "").strip()
-            if "SELECT" in cleaned.upper():
-                return cleaned
+            cleaned = res.text.strip()
+            cleaned = re.sub(r"^```(?:sql)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+            # Extract only SELECT statement if extra text returned
+            select_match = re.search(r"(SELECT\s+.*)", cleaned, re.IGNORECASE | re.DOTALL)
+            if select_match:
+                return select_match.group(1).rstrip(";")
     except Exception:
         pass
 
-    # Generic Smart Fallback
-    num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
-    cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c])]
-    if num_cols and cat_cols:
-        return f"SELECT {cat_cols[0]}, SUM({num_cols[0]}) AS Total_{num_cols[0]} FROM df GROUP BY {cat_cols[0]}"
-    return f"SELECT * FROM df LIMIT 10"
-
+    # Safe dynamic fallback if network drops
+    return f"SELECT * FROM df WHERE LOWER(Category) LIKE '%{prompt_text.lower().split()[-1]}%' LIMIT 10"
 
 # Page Setup & Styling
 st.set_page_config(
@@ -83,11 +81,10 @@ if uploaded_file is not None:
 
     st.divider()
 
-    user_query = st.text_input("💬 Ask a question about this data:",
-                               placeholder="e.g., quantity of product in north region")
+    user_query = st.text_input("💬 Ask a question about this data:", placeholder="e.g., Show sales in Electronics category")
 
     if user_query:
-        with st.spinner("🤖 Generating SQL & executing..."):
+        with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
             try:
                 sql_query = generate_sql_free(user_query, df)
 
@@ -120,7 +117,7 @@ if uploaded_file is not None:
                         else:
                             st.info("ℹ️ Result columns are non-numeric; table view shown.")
                     else:
-                        st.info("ℹ️ Single column output; chart not required.")
+                        st.info("ℹ️ Single metric/column output; table view shown above.")
 
             except Exception as e:
                 st.error(f"❌ Execution Error: {e}")

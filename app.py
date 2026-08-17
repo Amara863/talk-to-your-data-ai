@@ -3,52 +3,74 @@ import pandas as pd
 import duckdb
 import plotly.express as px
 import requests
+import urllib.parse
 import re
 
+
 # =========================================================
-# 🚀 Dynamic AI SQL Engine (Accurate Zero-Key Inference)
+# 🧠 Smart & Accurate SQL Generator (AI + Data-Aware NLP)
 # =========================================================
-def generate_sql_free(prompt_text, df):
-    columns_info = ", ".join([f"{col} ({dtype})" for col, dtype in zip(df.columns, df.dtypes)])
-    sample_data = df.head(3).to_string(index=False)
+def generate_sql(prompt_text, df):
+    text = prompt_text.strip()
+    lowered = text.lower()
 
-    system_prompt = f"""You are an expert DuckDB SQL engineer.
-Table Name: strictly 'df'
-Columns & Data Types: {columns_info}
-
-Sample Rows:
-{sample_data}
-
-Instructions:
-1. Translate the user query into a strictly valid DuckDB SQL query.
-2. If the user asks for a specific filter (e.g., specific Category like 'Electronics', or Region like 'North'), use a WHERE clause (e.g. WHERE LOWER(Category) = 'electronics').
-3. If grouping is requested or implied with aggregations, include appropriate GROUP BY.
-4. Output ONLY the raw SQL query. Do not wrap in markdown (no ```sql or ```), do not add comments or explanations."""
-
-    url = "https://text.pollinations.ai/"
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Generate DuckDB SQL for: {prompt_text}"}
-        ],
-        "model": "mistral",
-        "seed": 42
-    }
-
+    # 1. AI API Call (Open Mistral / LLM via GET)
     try:
-        res = requests.post(url, json=payload, timeout=12)
-        if res.status_code == 200:
-            cleaned = res.text.strip()
-            cleaned = re.sub(r"^```(?:sql)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-            # Extract only SELECT statement if extra text returned
-            select_match = re.search(r"(SELECT\s+.*)", cleaned, re.IGNORECASE | re.DOTALL)
-            if select_match:
-                return select_match.group(1).rstrip(";")
+        sys_info = f"Table: df, Columns: {list(df.columns)}, Sample: {df.head(2).to_dict(orient='records')}"
+        encoded_prompt = urllib.parse.quote(
+            f"Act as a DuckDB SQL generator. Only return the SQL query without any explanation or markdown formatting.\nContext: {sys_info}\nUser Question: {text}"
+        )
+        url = f"https://text.pollinations.ai/{encoded_prompt}?model=mistral"
+        res = requests.get(url, timeout=8)
+        if res.status_code == 200 and "SELECT" in res.text.upper():
+            cleaned = res.text.strip().replace("```sql", "").replace("```", "").strip()
+            match = re.search(r"(SELECT\s+.*)", cleaned, re.IGNORECASE | re.DOTALL)
+            if match:
+                test_sql = match.group(1).rstrip(";").strip()
+                duckdb.query(test_sql).df()  # Validate execution
+                return test_sql
     except Exception:
         pass
 
-    # Safe dynamic fallback if network drops
-    return f"SELECT * FROM df WHERE LOWER(Category) LIKE '%{prompt_text.lower().split()[-1]}%' LIMIT 10"
+    # 2. Intelligent Data-Aware Parser (Guaranteed Fallback)
+    cols = list(df.columns)
+    cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c]) and c.lower() != 'date']
+    num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
+
+    matched_filters = []
+    for c in cat_cols:
+        for val in df[c].dropna().unique():
+            if str(val).lower() in lowered:
+                matched_filters.append(f"LOWER({c}) = '{str(val).lower()}'")
+
+    where_clause = f" WHERE {' AND '.join(matched_filters)}" if matched_filters else ""
+
+    # Check grouping columns
+    group_col = None
+    for c in cat_cols:
+        if c.lower() in lowered and not any(str(v).lower() in lowered for v in df[c].dropna().unique()):
+            group_col = c
+            break
+
+    # Determine numeric metric
+    num_col = "Sales" if "sales" in lowered and "Sales" in num_cols else (
+        "Quantity" if "quantity" in lowered and "Quantity" in num_cols else (num_cols[0] if num_cols else None))
+
+    if matched_filters and not group_col:
+        display_cols = [c for c in cat_cols if not any(c in f for f in matched_filters)]
+        target_group = display_cols[0] if display_cols else cat_cols[0]
+        if num_col:
+            return f"SELECT {target_group}, SUM({num_col}) AS Total_{num_col} FROM df{where_clause} GROUP BY {target_group}"
+        return f"SELECT * FROM df{where_clause}"
+
+    if group_col and num_col:
+        return f"SELECT {group_col}, SUM({num_col}) AS Total_{num_col} FROM df{where_clause} GROUP BY {group_col}"
+
+    if num_col and cat_cols:
+        return f"SELECT {cat_cols[0]}, SUM({num_col}) AS Total_{num_col} FROM df GROUP BY {cat_cols[0]}"
+
+    return "SELECT * FROM df LIMIT 10"
+
 
 # Page Setup & Styling
 st.set_page_config(
@@ -81,12 +103,13 @@ if uploaded_file is not None:
 
     st.divider()
 
-    user_query = st.text_input("💬 Ask a question about this data:", placeholder="e.g., Show sales in Electronics category")
+    user_query = st.text_input("💬 Ask a question about this data:",
+                               placeholder="e.g., Show sales in Electronics category")
 
     if user_query:
         with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
             try:
-                sql_query = generate_sql_free(user_query, df)
+                sql_query = generate_sql(user_query, df)
 
                 col_left, col_right = st.columns([1, 1])
 
@@ -100,24 +123,30 @@ if uploaded_file is not None:
 
                 with col_right:
                     st.subheader("📈 Dynamic Visualization")
-                    if len(result_df.columns) >= 2:
-                        x_col = result_df.columns[0]
-                        y_col = result_df.columns[1]
+                    numeric_cols = [c for c in result_df.columns if pd.api.types.is_numeric_dtype(result_df[c])]
+                    non_numeric_cols = [c for c in result_df.columns if not pd.api.types.is_numeric_dtype(result_df[c])]
 
-                        if pd.api.types.is_numeric_dtype(result_df[y_col]):
-                            fig = px.bar(
-                                result_df,
-                                x=x_col,
-                                y=y_col,
-                                title=f"{y_col} grouped by {x_col}",
-                                template="plotly_white",
-                                color_discrete_sequence=['#2563EB']
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info("ℹ️ Result columns are non-numeric; table view shown.")
+                    if numeric_cols and non_numeric_cols:
+                        fig = px.bar(
+                            result_df,
+                            x=non_numeric_cols[0],
+                            y=numeric_cols[0],
+                            title=f"{numeric_cols[0]} by {non_numeric_cols[0]}",
+                            template="plotly_white",
+                            color_discrete_sequence=['#2563EB']
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                    elif len(numeric_cols) >= 2:
+                        fig = px.bar(
+                            result_df,
+                            x=numeric_cols[0],
+                            y=numeric_cols[1],
+                            template="plotly_white",
+                            color_discrete_sequence=['#2563EB']
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
                     else:
-                        st.info("ℹ️ Single metric/column output; table view shown above.")
+                        st.info("ℹ️ Visualization rendered as table.")
 
             except Exception as e:
                 st.error(f"❌ Execution Error: {e}")

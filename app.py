@@ -2,74 +2,73 @@ import streamlit as st
 import pandas as pd
 import duckdb
 import plotly.express as px
-import requests
-import urllib.parse
 import re
 
 
 # =========================================================
-# 🧠 Smart & Accurate SQL Generator (AI + Data-Aware NLP)
+# 🧠 Deterministic & Accurate Text-to-SQL Engine
 # =========================================================
 def generate_sql(prompt_text, df):
     text = prompt_text.strip()
     lowered = text.lower()
-
-    # 1. AI API Call (Open Mistral / LLM via GET)
-    try:
-        sys_info = f"Table: df, Columns: {list(df.columns)}, Sample: {df.head(2).to_dict(orient='records')}"
-        encoded_prompt = urllib.parse.quote(
-            f"Act as a DuckDB SQL generator. Only return the SQL query without any explanation or markdown formatting.\nContext: {sys_info}\nUser Question: {text}"
-        )
-        url = f"https://text.pollinations.ai/{encoded_prompt}?model=mistral"
-        res = requests.get(url, timeout=8)
-        if res.status_code == 200 and "SELECT" in res.text.upper():
-            cleaned = res.text.strip().replace("```sql", "").replace("```", "").strip()
-            match = re.search(r"(SELECT\s+.*)", cleaned, re.IGNORECASE | re.DOTALL)
-            if match:
-                test_sql = match.group(1).rstrip(";").strip()
-                duckdb.query(test_sql).df()  # Validate execution
-                return test_sql
-    except Exception:
-        pass
-
-    # 2. Intelligent Data-Aware Parser (Guaranteed Fallback)
     cols = list(df.columns)
+
     cat_cols = [c for c in cols if not pd.api.types.is_numeric_dtype(df[c]) and c.lower() != 'date']
     num_cols = [c for c in cols if pd.api.types.is_numeric_dtype(df[c])]
 
+    # 1. Detect Exact Column Value Filters (e.g., North, Electronics, Laptop)
     matched_filters = []
+    filtered_cols = set()
     for c in cat_cols:
         for val in df[c].dropna().unique():
-            if str(val).lower() in lowered:
+            # Exact word or phrase match
+            if re.search(rf"\b{re.escape(str(val).lower())}\b", lowered):
                 matched_filters.append(f"LOWER({c}) = '{str(val).lower()}'")
+                filtered_cols.add(c)
 
     where_clause = f" WHERE {' AND '.join(matched_filters)}" if matched_filters else ""
 
-    # Check grouping columns
+    # 2. Detect Target Metric (Sales vs Quantity vs Count)
+    is_qty = any(w in lowered for w in ["quantity", "qty", "number", "count", "items", "units", "total product"])
+    is_sales = any(w in lowered for w in ["sales", "revenue", "amount", "price", "earning"])
+
+    target_num = None
+    if is_qty and "Quantity" in num_cols:
+        target_num = "Quantity"
+    elif is_sales and "Sales" in num_cols:
+        target_num = "Sales"
+    elif num_cols:
+        target_num = num_cols[0]
+
+    # 3. Detect Group By Column
     group_col = None
     for c in cat_cols:
-        if c.lower() in lowered and not any(str(v).lower() in lowered for v in df[c].dropna().unique()):
+        if c not in filtered_cols and (
+                c.lower() in lowered or f"by {c.lower()}" in lowered or f"per {c.lower()}" in lowered):
             group_col = c
             break
 
-    # Determine numeric metric
-    num_col = "Sales" if "sales" in lowered and "Sales" in num_cols else (
-        "Quantity" if "quantity" in lowered and "Quantity" in num_cols else (num_cols[0] if num_cols else None))
+    # If "product" explicitly mentioned with grouping intent, group by Product
+    if "product" in lowered and "Product" not in filtered_cols:
+        group_col = "Product"
 
-    if matched_filters and not group_col:
-        display_cols = [c for c in cat_cols if not any(c in f for f in matched_filters)]
-        target_group = display_cols[0] if display_cols else cat_cols[0]
-        if num_col:
-            return f"SELECT {target_group}, SUM({num_col}) AS Total_{num_col} FROM df{where_clause} GROUP BY {target_group}"
+    # 4. Formulate Accurate SQL Query
+    if group_col and target_num:
+        return f"SELECT {group_col}, SUM({target_num}) AS Total_{target_num} FROM df{where_clause} GROUP BY {group_col}"
+
+    if target_num and where_clause and not group_col:
+        return f"SELECT SUM({target_num}) AS Total_{target_num} FROM df{where_clause}"
+
+    if group_col:
+        return f"SELECT {group_col}, COUNT(*) AS Count FROM df{where_clause} GROUP BY {group_col}"
+
+    if where_clause:
         return f"SELECT * FROM df{where_clause}"
 
-    if group_col and num_col:
-        return f"SELECT {group_col}, SUM({num_col}) AS Total_{num_col} FROM df{where_clause} GROUP BY {group_col}"
-
-    if num_col and cat_cols:
-        return f"SELECT {cat_cols[0]}, SUM({num_col}) AS Total_{num_col} FROM df GROUP BY {cat_cols[0]}"
-
-    return "SELECT * FROM df LIMIT 10"
+    # Default Top Overview
+    primary_cat = cat_cols[0] if cat_cols else cols[0]
+    primary_num = num_cols[0] if num_cols else cols[-1]
+    return f"SELECT {primary_cat}, SUM({primary_num}) AS Total_{primary_num} FROM df GROUP BY {primary_cat}"
 
 
 # Page Setup & Styling
@@ -104,10 +103,10 @@ if uploaded_file is not None:
     st.divider()
 
     user_query = st.text_input("💬 Ask a question about this data:",
-                               placeholder="e.g., Show sales in Electronics category")
+                               placeholder="e.g., total number of product in north region")
 
     if user_query:
-        with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
+        with st.spinner("⚡ Translating to SQL and executing..."):
             try:
                 sql_query = generate_sql(user_query, df)
 
@@ -136,17 +135,8 @@ if uploaded_file is not None:
                             color_discrete_sequence=['#2563EB']
                         )
                         st.plotly_chart(fig, use_container_width=True)
-                    elif len(numeric_cols) >= 2:
-                        fig = px.bar(
-                            result_df,
-                            x=numeric_cols[0],
-                            y=numeric_cols[1],
-                            template="plotly_white",
-                            color_discrete_sequence=['#2563EB']
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
                     else:
-                        st.info("ℹ️ Visualization rendered as table.")
+                        st.info("ℹ️ Single metric scalar output; table view shown on the left.")
 
             except Exception as e:
                 st.error(f"❌ Execution Error: {e}")

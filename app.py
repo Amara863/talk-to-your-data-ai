@@ -17,19 +17,11 @@ def generate_sql_with_gemini(prompt_text):
     if not GEMINI_API_KEY:
         raise Exception("API Key missing! Please set GEMINI_API_KEY in Secrets.")
 
-    # Headers for both AQ. and AIza keys
-    if GEMINI_API_KEY.startswith("AQ."):
-        headers = {
-            "Authorization": f"Bearer {GEMINI_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    else:
-        headers = {
-            "x-goog-api-key": GEMINI_API_KEY,
-            "Content-Type": "application/json"
-        }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+
+    headers = {
+        "Content-Type": "application/json"
+    }
 
     payload = {
         "contents": [{

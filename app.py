@@ -3,7 +3,8 @@ import streamlit as st
 import pandas as pd
 import duckdb
 import plotly.express as px
-import google.generativeai as genai
+import requests
+import json
 import re
 
 # ==========================================
@@ -11,35 +12,39 @@ import re
 # ==========================================
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
 
 def generate_sql_with_gemini(prompt_text):
-    try:
-        live_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-    except Exception:
-        live_models = []
+    if not GEMINI_API_KEY:
+        raise Exception("API Key missing! Please set GEMINI_API_KEY in Secrets.")
 
-    flash_models = [m for m in live_models if 'flash' in m.lower()]
-    other_models = [m for m in live_models if m not in flash_models]
-    candidates = flash_models + other_models
+    # Headers for both AQ. and AIza keys
+    if GEMINI_API_KEY.startswith("AQ."):
+        headers = {
+            "Authorization": f"Bearer {GEMINI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    else:
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json"
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
-    if not candidates:
-        candidates = ['models/gemini-2.5-flash', 'gemini-2.5-flash', 'gemini-flash-latest']
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }]
+    }
 
-    last_error = None
-    for model_name in candidates:
-        try:
-            m = genai.GenerativeModel(model_name)
-            res = m.generate_content(prompt_text)
-            if res and res.text:
-                return res.text
-        except Exception as e:
-            last_error = e
-            continue
+    response = requests.post(url, headers=headers, json=payload)
+    data = response.json()
 
-    raise last_error if last_error else Exception("Unable to generate response from model.")
+    if response.status_code != 200:
+        error_msg = data.get("error", {}).get("message", response.text)
+        raise Exception(f"Google API Error: {error_msg}")
+
+    return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 # Page Setup & Theme Styling
@@ -80,65 +85,62 @@ if uploaded_file is not None:
                                placeholder="e.g., Show total Sales by Region as a bar chart")
 
     if user_query:
-        if not GEMINI_API_KEY:
-            st.error("⚠️ Gemini API Key not found. Please set GEMINI_API_KEY in Streamlit Secrets.")
-        else:
-            with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
-                prompt = f"""
-                You are an expert DuckDB SQL analyst.
-                The table name is strictly 'df'.
+        with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
+            prompt = f"""
+            You are an expert DuckDB SQL analyst.
+            The table name is strictly 'df'.
 
-                Columns and types: {columns_info}
-                Sample rows:
-                {sample_rows}
+            Columns and types: {columns_info}
+            Sample rows:
+            {sample_rows}
 
-                User Question: "{user_query}"
+            User Question: "{user_query}"
 
-                Rules:
-                1. Return ONLY the valid executable SQL query. Do not include markdown tags like ```sql or ```.
-                2. Do not write explanations.
-                3. Query must be compatible with DuckDB and table name 'df'.
-                """
+            Rules:
+            1. Return ONLY the valid executable SQL query. Do not include markdown tags like ```sql or ```.
+            2. Do not write explanations.
+            3. Query must be compatible with DuckDB and table name 'df'.
+            """
 
-                try:
-                    raw_sql = generate_sql_with_gemini(prompt)
+            try:
+                raw_sql = generate_sql_with_gemini(prompt)
 
-                    sql_query = raw_sql.strip()
-                    sql_query = re.sub(r"```sql|```", "", sql_query).strip()
+                sql_query = raw_sql.strip()
+                sql_query = re.sub(r"```sql|```", "", sql_query).strip()
 
-                    col_left, col_right = st.columns([1, 1])
+                col_left, col_right = st.columns([1, 1])
 
-                    with col_left:
-                        st.subheader("🔍 Generated SQL Query")
-                        st.code(sql_query, language="sql")
+                with col_left:
+                    st.subheader("🔍 Generated SQL Query")
+                    st.code(sql_query, language="sql")
 
-                        result_df = duckdb.query(sql_query).df()
-                        st.subheader("📋 Query Results")
-                        st.dataframe(result_df, use_container_width=True)
+                    result_df = duckdb.query(sql_query).df()
+                    st.subheader("📋 Query Results")
+                    st.dataframe(result_df, use_container_width=True)
 
-                    with col_right:
-                        st.subheader("📈 Dynamic Visualization")
-                        if len(result_df.columns) >= 2:
-                            x_col = result_df.columns[0]
-                            y_col = result_df.columns[1]
+                with col_right:
+                    st.subheader("📈 Dynamic Visualization")
+                    if len(result_df.columns) >= 2:
+                        x_col = result_df.columns[0]
+                        y_col = result_df.columns[1]
 
-                            if pd.api.types.is_numeric_dtype(result_df[y_col]):
-                                fig = px.bar(
-                                    result_df,
-                                    x=x_col,
-                                    y=y_col,
-                                    title=f"{y_col} grouped by {x_col}",
-                                    template="plotly_white",
-                                    color_discrete_sequence=['#2563EB']
-                                )
-                                st.plotly_chart(fig, use_container_width=True)
-                            else:
-                                st.info("ℹ️ Result columns are non-numeric; table view shown.")
+                        if pd.api.types.is_numeric_dtype(result_df[y_col]):
+                            fig = px.bar(
+                                result_df,
+                                x=x_col,
+                                y=y_col,
+                                title=f"{y_col} grouped by {x_col}",
+                                template="plotly_white",
+                                color_discrete_sequence=['#2563EB']
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                         else:
-                            st.info("ℹ️ Single column output; chart not required.")
+                            st.info("ℹ️ Result columns are non-numeric; table view shown.")
+                    else:
+                        st.info("ℹ️ Single column output; chart not required.")
 
-                except Exception as e:
-                    st.error(f"❌ Execution Error: {e}")
+            except Exception as e:
+                st.error(f"❌ Execution Error: {e}")
 
 else:
     st.info("👈 Upload `sales_data.csv` in the sidebar to get started!")

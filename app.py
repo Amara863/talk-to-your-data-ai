@@ -7,7 +7,7 @@ from groq import Groq
 import re
 
 # =========================================================
-# 🚀 Universal AI Text-to-SQL Engine (Groq LLaMA-3.3)
+# 🚀 Universal AI Text-to-SQL Engine (Groq Multi-Model Safe)
 # =========================================================
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY", os.getenv("GROQ_API_KEY", ""))
 
@@ -18,7 +18,7 @@ def generate_sql(user_query, df):
 
     client = Groq(api_key=GROQ_API_KEY)
 
-    # Dynamically extract full schema and sample values from any CSV
+    # Extract dynamic schema from dataset
     schema_details = []
     for col in df.columns:
         samples = df[col].dropna().unique()[:3].tolist()
@@ -38,23 +38,39 @@ Generate a strictly valid DuckDB SQL query to answer the user's question accurat
 Rules:
 1. Return ONLY the raw SQL query.
 2. NEVER use markdown code fences (no ```sql or ```).
-3. NEVER write explanations or additional text.
-4. Use ILIKE or LOWER() for flexible text matching where appropriate.
+3. NEVER write explanations or notes.
+4. Use ILIKE or LOWER() for flexible text matching.
 5. If column names have spaces, enclose them in double quotes.
 """
 
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"User question: {user_query}"}
-        ],
-        temperature=0.0
-    )
+    # Multi-model priority list
+    models_to_try = [
+        "llama-3.1-8b-instant",
+        "llama3-70b-8192",
+        "llama3-8b-8192",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it"
+    ]
 
-    raw_sql = response.choices[0].message.content.strip()
-    cleaned_sql = re.sub(r"^```(?:sql)?|```$", "", raw_sql, flags=re.MULTILINE).strip()
-    return cleaned_sql
+    last_err = None
+    for model_name in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"User question: {user_query}"}
+                ],
+                temperature=0.0
+            )
+            raw_sql = response.choices[0].message.content.strip()
+            cleaned_sql = re.sub(r"^```(?:sql)?|```$", "", raw_sql, flags=re.MULTILINE).strip()
+            return cleaned_sql
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise Exception(f"Failed to generate SQL: {last_err}")
 
 
 # =========================================================
@@ -75,8 +91,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📊 Universal Text-to-SQL Analytics Engine")
-st.write(
-    "Upload **any CSV file** (Sales, Student, Library, Hospital, Finance), ask questions in plain English, and get instant SQL execution with dynamic charts.")
+st.write("Upload **any CSV file**, ask questions in plain English, and get instant SQL execution with dynamic charts.")
 
 # Sidebar File Ingestion
 st.sidebar.header("📁 Data Ingestion")
@@ -95,7 +110,7 @@ if uploaded_file is not None:
                                placeholder="e.g., attendance for rahul / highest marks / total sales by region")
 
     if user_query:
-        with st.spinner("🤖 Groq LLaMA-3 analyzing dataset and running SQL..."):
+        with st.spinner("🤖 Generating and executing SQL..."):
             try:
                 sql_query = generate_sql(user_query, df)
 

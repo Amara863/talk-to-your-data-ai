@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import duckdb
@@ -6,22 +7,20 @@ import google.generativeai as genai
 import re
 
 # ==========================================
-# 🔑 Gemini API Key
+# 🔑 Fetch API Key from Streamlit Secrets
 # ==========================================
-GEMINI_API_KEY = "AQ.Ab8RN6LAbxeCqD_iD5Sdx7MehTTOo5zuWZKYsoP0sBNXxvm8cA"
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY", ""))
 
-if GEMINI_API_KEY and GEMINI_API_KEY != "PASTE_YOUR_GEMINI_API_KEY_HERE":
+if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
 
 def generate_sql_with_gemini(prompt_text):
-    # Fetch active models dynamically from your account
     try:
         live_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
     except Exception:
         live_models = []
 
-    # Prioritize Flash models first (Free Tier friendly)
     flash_models = [m for m in live_models if 'flash' in m.lower()]
     other_models = [m for m in live_models if m not in flash_models]
     candidates = flash_models + other_models
@@ -40,7 +39,7 @@ def generate_sql_with_gemini(prompt_text):
             last_error = e
             continue
 
-    raise last_error if last_error else Exception("No active model could generate the SQL response.")
+    raise last_error if last_error else Exception("Unable to generate response from model.")
 
 
 # Page Setup & Theme Styling
@@ -50,7 +49,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for clean UI
 st.markdown("""
     <style>
     .main { background-color: #F8FAFC; }
@@ -82,10 +80,10 @@ if uploaded_file is not None:
                                placeholder="e.g., Show total Sales by Region as a bar chart")
 
     if user_query:
-        if not GEMINI_API_KEY or GEMINI_API_KEY == "PASTE_YOUR_GEMINI_API_KEY_HERE":
-            st.error("⚠️ Please configure a valid Gemini API Key.")
+        if not GEMINI_API_KEY:
+            st.error("⚠️ Gemini API Key not found. Please set GEMINI_API_KEY in Streamlit Secrets.")
         else:
-            with st.spinner("🤖 Generating SQL via Active AI Model..."):
+            with st.spinner("🤖 Translating natural language to DuckDB SQL..."):
                 prompt = f"""
                 You are an expert DuckDB SQL analyst.
                 The table name is strictly 'df'.
@@ -98,7 +96,7 @@ if uploaded_file is not None:
 
                 Rules:
                 1. Return ONLY the valid executable SQL query. Do not include markdown tags like ```sql or ```.
-                2. Do not write explanations or notes.
+                2. Do not write explanations.
                 3. Query must be compatible with DuckDB and table name 'df'.
                 """
 
@@ -114,7 +112,6 @@ if uploaded_file is not None:
                         st.subheader("🔍 Generated SQL Query")
                         st.code(sql_query, language="sql")
 
-                        # Execute SQL in DuckDB
                         result_df = duckdb.query(sql_query).df()
                         st.subheader("📋 Query Results")
                         st.dataframe(result_df, use_container_width=True)
